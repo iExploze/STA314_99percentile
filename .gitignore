@@ -1,0 +1,42 @@
+# ---- Python / virtualenv ----
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+*.ipynb
+
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Logs / outputs ----
+*.log
+logs/
+runs/
+outputs/
+checkpoints/
+models/
+*.pt
+*.pth
+*.ckpt
+
+# ---- Data (usually too big to commit) ----
+data/
+*.zip
+*.tar
+*.tar.gz
+
+# ---- Temporary files ----
+*.tmp
+*.swp
+*~
