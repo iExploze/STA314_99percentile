@@ -30,12 +30,6 @@ models/
 *.pth
 *.ckpt
 
-# ---- Data (usually too big to commit) ----
-data/
-*.zip
-*.tar
-*.tar.gz
-
 # ---- Temporary files ----
 *.tmp
 *.swp
