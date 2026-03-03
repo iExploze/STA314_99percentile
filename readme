@@ -1,0 +1,169 @@
+```markdown
+# STA314 Project – Image Emotion Classification (Baseline CNN)
+
+This repo contains a small image classification pipeline for the STA314 course project.  
+Current setup uses a folder-based dataset (via `torchvision.datasets.ImageFolder`), splits into train/val, trains a baseline **pretrained ResNet18** model, and saves the best checkpoint.
+
+There’s also an optional **Streamlit drag-and-drop demo app** for fun inference on your own images.
+
+---
+
+## Folder Structure (current)
+
+Expected dataset layout:
+
+```
+
+STA314_99percentile/
+data/
+train/
+Angry/
+img_*.jpg
+Happy/
+img_*.jpg
+Sad/
+img_*.jpg
+test/
+img_*.jpg   # (optional/unlabeled, if you have it)
+src/
+data_loader.py
+train.py
+checkpoints/
+best.pt       # created after training
+app.py          # optional (Streamlit demo)
+requirements.txt
+.gitignore
+README.md
+
+````
+
+> `ImageFolder` requires `data/train/<class_name>/*.jpg` format.
+
+---
+
+## Setup
+
+### 1) Create & activate venv
+
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+````
+
+### 2) Install dependencies
+
+If you already have a `requirements.txt`:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+If not, install the core stack manually:
+
+```bash
+python -m pip install torch torchvision torchaudio numpy pandas scikit-learn matplotlib tqdm pillow opencv-python
+python -m pip install streamlit ipykernel certifi
+```
+
+---
+
+## Data Loader (train/val split + batch check)
+
+`src/data_loader.py`:
+
+* reads `data/train/` with `ImageFolder`
+* splits train/val (default 85/15)
+* builds `DataLoader`s
+* prints dataset info + one batch shape
+
+Run:
+
+```bash
+python src/data_loader.py
+```
+
+Expected output includes:
+
+* number of train samples / val samples
+* class names (e.g. `['Angry', 'Happy', 'Sad']`)
+* one batch shape `(B, 3, 224, 224)`
+
+---
+
+## Training Baseline Model (ResNet18)
+
+`src/train.py` trains a baseline CNN model:
+
+* default: **feature extraction** (freeze ResNet backbone, train only final layer)
+* optional: **fine-tuning** (`--fine_tune`)
+* saves best model to `checkpoints/best.pt` (by validation accuracy)
+* prints train/val loss + accuracy per epoch
+
+### Train (feature extraction baseline)
+
+```bash
+python src/train.py --epochs 8
+```
+
+### Fine-tune (optional)
+
+```bash
+python src/train.py --fine_tune --lr 1e-4 --epochs 8
+```
+
+### Notes
+
+* The script auto-selects device: CUDA (if available) → MPS (Mac) → CPU.
+* Pretrained weights download once and cache under `~/.cache/torch/`.
+* `checkpoints/best.pt` stores:
+
+  * `model_state_dict`
+  * `class_to_idx`
+  * training args + best val accuracy
+
+---
+
+## (Optional) Drag-and-drop Demo App (Streamlit)
+
+`app.py` is a simple browser app that:
+
+* lets you drag & drop an image
+* loads `checkpoints/best.pt`
+* outputs top class prediction + probabilities
+* includes a “Happy threshold” slider if `Happy` is a class
+
+Install Streamlit:
+
+```bash
+python -m pip install streamlit pillow
+```
+
+Run:
+
+```bash
+streamlit run app.py
+```
+
+Open the link Streamlit prints in terminal (usually `http://localhost:8501`).
+
+> Disclaimer: If the model was trained on human expression images, predictions on dog photos are just for fun and may not be reliable (domain shift).
+
+---
+
+## Git Notes
+
+* `.venv/` and `data/` are ignored by `.gitignore` by default (to avoid committing huge files).
+* Share datasets separately (e.g., Google Drive) and only commit code + configs.
+
+---
+
+## Next Steps (planned / ideas)
+
+* Add train-time augmentations (random crop/flip) to improve generalization
+* Add evaluation script: confusion matrix + per-class F1
+* Add inference script for batch predictions on test set (if needed)
+
+---
