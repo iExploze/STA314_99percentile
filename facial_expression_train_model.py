@@ -71,6 +71,7 @@ for i in range(1,250):
         y.append(2)
 
 # Data transforming
+
 X = np.array(X)
 y = np.array(y)
 
