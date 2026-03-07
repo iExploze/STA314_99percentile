@@ -10,9 +10,9 @@ from torchvision import datasets, transforms, models
 # =====================
 # config
 # =====================
-train_dir = "data/train/train"
-test_dir = "data/test/test"
-sample_sub_file = "data/sample_submission.csv"
+train_dir = "train/train"
+test_dir = "test/test"
+sample_sub_file = "sample_submission.csv"
 
 batch_size = 32
 lr = 0.001
@@ -21,6 +21,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("device:", device)
 print("train_dir:", train_dir)
 print("test_dir:", test_dir)
+print("sample_sub_file:", sample_sub_file)
+
+# path checks
+if not os.path.exists(train_dir):
+    raise FileNotFoundError(f"Training directory not found: {train_dir}")
+if not os.path.exists(test_dir):
+    raise FileNotFoundError(f"Test directory not found: {test_dir}")
+if not os.path.exists(sample_sub_file):
+    raise FileNotFoundError(f"Sample submission file not found: {sample_sub_file}")
 
 # =====================
 # transform
@@ -50,7 +59,7 @@ train_size = len(full_ds) - val_size
 
 train_ds, val_ds = random_split(full_ds, [train_size, val_size])
 
-# validation does not use augmentation
+# validation set uses non-augmented transforms
 val_ds.dataset = datasets.ImageFolder(train_dir, transform=val_tfms)
 
 train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
@@ -65,7 +74,7 @@ print("val batches:", len(val_loader))
 # model
 # =====================
 def build_model():
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    model = models.resnet18(weights=None)
     model.fc = nn.Linear(model.fc.in_features, 3)
     model = model.to(device)
     return model
@@ -79,7 +88,7 @@ def train_model(model, epochs):
 
     for epoch in range(epochs):
         model.train()
-        total_loss = 0
+        total_loss = 0.0
 
         for images, labels in train_loader:
             images = images.to(device)
@@ -94,7 +103,8 @@ def train_model(model, epochs):
 
             total_loss += loss.item()
 
-        print("Epoch:", epoch + 1, "Loss:", total_loss)
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
 
 # =====================
 # validation
@@ -116,6 +126,9 @@ def check_accuracy(model):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
+    if total == 0:
+        return 0.0
+
     return correct / total
 
 # =====================
@@ -136,7 +149,7 @@ def make_submission(model, save_name):
     with torch.no_grad():
         for file_name in test_files:
             if file_name.lower().endswith((".jpg", ".jpeg", ".png")):
-                img_path = test_dir + "/" + file_name
+                img_path = os.path.join(test_dir, file_name)
                 img = Image.open(img_path).convert("RGB")
                 img = val_tfms(img).unsqueeze(0).to(device)
 
@@ -155,7 +168,7 @@ def make_submission(model, save_name):
     print("saved", save_name)
 
 # =====================
-# experiment 1: 5 epochs
+# quick test run
 # =====================
 print("\n===== ResNet18: 5 epochs =====")
 model_5 = build_model()
@@ -164,9 +177,6 @@ acc_5 = check_accuracy(model_5)
 print("Validation accuracy (5 epochs):", acc_5)
 make_submission(model_5, "submission_resnet18_5epochs.csv")
 
-# =====================
-# experiment 2: 10 epochs
-# =====================
 print("\n===== ResNet18: 10 epochs =====")
 model_10 = build_model()
 train_model(model_10, 10)
@@ -174,9 +184,6 @@ acc_10 = check_accuracy(model_10)
 print("Validation accuracy (10 epochs):", acc_10)
 make_submission(model_10, "submission_resnet18_10epochs.csv")
 
-# =====================
-# final result
-# =====================
 print("\n===== Final Result =====")
 print("5 epochs accuracy:", acc_5)
 print("10 epochs accuracy:", acc_10)
