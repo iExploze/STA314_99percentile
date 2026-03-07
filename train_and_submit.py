@@ -10,9 +10,7 @@ from torchvision import datasets, transforms, models
 from torchvision.models import ResNet18_Weights
 from PIL import Image
 
-# -------------------
 # CONFIG (edit these)
-# -------------------
 DATA_DIR   = Path(r"C:\Users\user\Desktop\2025-2026\STA314\J-model\STA314_99percentile-main\train\train1\src\data")
 TRAIN_DIR  = DATA_DIR / "train"
 TEST_DIR   = DATA_DIR / "test"
@@ -33,9 +31,8 @@ NUM_WORKERS  = 0
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 torch.manual_seed(SEED)
 
-# -------------------
+
 # Transforms
-# -------------------
 train_tfms = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.RandomHorizontalFlip(),
@@ -53,9 +50,7 @@ val_tfms = transforms.Compose([
                          std=[0.229, 0.224, 0.225]),
 ])
 
-# -------------------
 # Dataset
-# -------------------
 full_ds    = datasets.ImageFolder(TRAIN_DIR, transform=train_tfms)
 class_names = full_ds.classes
 num_classes = len(class_names)
@@ -73,9 +68,8 @@ val_ds.dataset = datasets.ImageFolder(TRAIN_DIR, transform=val_tfms)
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
 val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
 
-# -------------------
+
 # Model helpers
-# -------------------
 
 def build_model(feature_extract: bool = True) -> nn.Module:
     model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
@@ -92,9 +86,7 @@ def unfreeze_model(model: nn.Module) -> None:
     print("  🔓 All layers unfrozen for fine-tuning.")
 
 
-# -------------------
 # Eval helper
-# -------------------
 criterion = nn.CrossEntropyLoss()
 
 def evaluate(model: nn.Module):
@@ -110,9 +102,7 @@ def evaluate(model: nn.Module):
     return loss_sum / total, correct / total
 
 
-# -------------------
 # STAGE 1 — Head only
-# -------------------
 model = build_model(feature_extract=True)
 
 stage1_epochs = FREEZE_EPOCHS if FINE_TUNE else EPOCHS
@@ -141,9 +131,7 @@ for epoch in range(1, stage1_epochs + 1):
     print(f"[S1] Epoch {epoch:02d} | val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
           f"| lr={opt1.param_groups[0]['lr']:.2e}")
 
-# -------------------
 # STAGE 2 — Fine-tune
-# -------------------
 if FINE_TUNE:
     stage2_epochs = EPOCHS - FREEZE_EPOCHS
     print(f"\n{'='*55}")
@@ -170,9 +158,8 @@ if FINE_TUNE:
         print(f"[S2] Epoch {global_ep:02d} | val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
               f"| lr={opt2.param_groups[0]['lr']:.2e}")
 
-# -------------------
+
 # Predict test
-# -------------------
 sample  = pd.read_csv(SAMPLE_SUB)
 id_col  = sample.columns[0]
 pred_col = sample.columns[1]

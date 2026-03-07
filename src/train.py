@@ -337,7 +337,6 @@ def main() -> None:
             )
             sch2 = (torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=stage2_epochs)
                     if args.lr_scheduler else None)
-
             for ep in range(1, stage2_epochs + 1):
                 tr_loss, tr_acc = run_one_epoch(
                     model, train_loader, criterion, device, opt2,

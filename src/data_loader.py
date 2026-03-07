@@ -36,7 +36,6 @@ def make_dataloaders(
     """
     Expects folder structure:
       data/train/<class_name>/*.jpg
-
     Returns:
       train_loader, val_loader, class_names, class_to_idx, n_train, n_val
     """
