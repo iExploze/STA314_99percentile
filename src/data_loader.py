@@ -7,6 +7,10 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
+print(torch.__version__)
+print("CUDA in torch:", torch.version.cuda)
+print("CUDA available:", torch.cuda.is_available())
+
 
 def build_transforms(img_size: int = 224) -> transforms.Compose:
     """Standard transforms (works well with pretrained ImageNet backbones)."""
@@ -32,7 +36,6 @@ def make_dataloaders(
     """
     Expects folder structure:
       data/train/<class_name>/*.jpg
-
     Returns:
       train_loader, val_loader, class_names, class_to_idx, n_train, n_val
     """
