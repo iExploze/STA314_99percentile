@@ -34,7 +34,22 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from torchvision import models, datasets, transforms
-from torchvision.models import EfficientNet_B2_Weights, ResNet18_Weights
+from torchvision.models import EfficientNet_B2_Weights, ResNet18_Weights, ConvNeXt_Tiny_Weights
+class FocalLoss(nn.Module):
+    def __init__(self, gamma: float = 2.0, label_smoothing: float = 0.0):
+        super().__init__()
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = nn.functional.cross_entropy(
+            logits, targets,
+            label_smoothing=self.label_smoothing,
+            reduction='none'
+        )
+        pt = torch.exp(-ce_loss)
+        focal_loss = (1 - pt) ** self.gamma * ce_loss
+        return focal_loss.mean()
 
 
 # Device
@@ -55,13 +70,9 @@ def build_transforms(img_size: int = 224):
     std  = [0.229, 0.224, 0.225]
 
     train_tfm = transforms.Compose([
-        transforms.Resize((img_size + 32, img_size + 32)),
-        transforms.RandomCrop(img_size),
+        transforms.Resize((img_size, img_size)),
+        transforms.TrivialAugmentWide(),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(20),
-        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.1),
-        transforms.RandomGrayscale(p=0.05),
-        transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
         transforms.RandomErasing(p=0.2, scale=(0.02, 0.15)),
@@ -74,7 +85,6 @@ def build_transforms(img_size: int = 224):
     ])
 
     return train_tfm, val_tfm
-
 # DataLoader
 
 def make_loaders(data_dir: str, train_subdir: str, batch_size: int,
@@ -94,7 +104,6 @@ def make_loaders(data_dir: str, train_subdir: str, batch_size: int,
     g = torch.Generator().manual_seed(seed)
     train_ds, val_ds = random_split(full_ds, [n_train, n_val], generator=g)
 
-    # val set uses no augmentation
     val_ds.dataset = datasets.ImageFolder(str(train_dir), transform=val_tfm)
 
     pin = torch.cuda.is_available()
@@ -103,7 +112,7 @@ def make_loaders(data_dir: str, train_subdir: str, batch_size: int,
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
                               num_workers=num_workers, pin_memory=pin)
 
-    return train_loader, val_loader, class_names, class_to_idx, n_train, n_val
+    return train_loader, val_loader, class_names, class_to_idx, n_train, n_val, train_tfm
 
 
 # Mixup
@@ -120,28 +129,60 @@ def mixup_criterion(criterion, logits, y_a, y_b, lam):
 # Model
 
 def build_model(num_classes: int, backbone: str = "efficientnet",
-                feature_extract: bool = True, dropout: float = 0.4) -> nn.Module:
-    if backbone == "efficientnet":
+                feature_extract: bool = True, dropout: float = 0.3) -> nn.Module:
+    if backbone == "convnext":
+        model = models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+        if feature_extract:
+            for p in model.parameters():
+                p.requires_grad = False
+        in_features = model.classifier[2].in_features
+        model.classifier[2] = nn.Sequential(
+            nn.Linear(in_features, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout),
+            nn.Linear(512, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout * 0.5),
+            nn.Linear(128, num_classes),
+        )
+
+    elif backbone == "efficientnet":
         model = models.efficientnet_b2(weights=EfficientNet_B2_Weights.DEFAULT)
         if feature_extract:
             for p in model.parameters():
                 p.requires_grad = False
         in_features = model.classifier[1].in_features
         model.classifier = nn.Sequential(
+            nn.Linear(in_features, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
             nn.Dropout(p=dropout),
-            nn.Linear(in_features, num_classes),
+            nn.Linear(512, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout * 0.5),
+            nn.Linear(128, num_classes),
         )
+
     else:
         model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
         if feature_extract:
             for p in model.parameters():
                 p.requires_grad = False
         model.fc = nn.Sequential(
+            nn.Linear(model.fc.in_features, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
             nn.Dropout(p=dropout),
-            nn.Linear(model.fc.in_features, num_classes),
+            nn.Linear(512, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout * 0.5),
+            nn.Linear(128, num_classes),
         )
     return model
-
 
 def unfreeze_model(model: nn.Module) -> None:
     for p in model.parameters():
@@ -151,9 +192,27 @@ def unfreeze_model(model: nn.Module) -> None:
 def count_trainable(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def predict_with_tta(model, images, train_tfm, device, n_aug=4):
+    all_preds = []
+    to_pil = transforms.ToPILImage()
+
+    with torch.no_grad():
+        # 原始图片
+        logits = model(images.to(device))
+        all_preds.append(torch.softmax(logits, dim=1))
+
+        # 增强后预测
+        for _ in range(n_aug):
+            aug_images = torch.stack([
+                train_tfm(to_pil(img.cpu()))
+                for img in images
+            ]).to(device)
+            logits = model(aug_images)
+            all_preds.append(torch.softmax(logits, dim=1))
+
+    return torch.stack(all_preds).mean(0)
 
 # One epoch
-
 def run_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -162,6 +221,7 @@ def run_one_epoch(
     optimizer=None,
     use_mixup: bool = False,
     mixup_alpha: float = 0.3,
+    train_tfm=None,           # 新增参数
 ) -> Tuple[float, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -178,6 +238,14 @@ def run_one_epoch(
                 logits = model(x)
                 loss = mixup_criterion(criterion, logits, y_a, y_b, lam)
                 ref_y = y_a
+
+            elif not is_train and train_tfm is not None:
+                # 验证时使用 TTA
+                probs = predict_with_tta(model, x, train_tfm, device, n_aug=4)
+                logits = torch.log(probs + 1e-8)
+                loss = criterion(logits, y)
+                ref_y = y
+
             else:
                 if is_train:
                     optimizer.zero_grad(set_to_none=True)
@@ -233,7 +301,7 @@ def main() -> None:
     parser.add_argument("--finetune_lr",   type=float, default=2e-5,
                         help="Stage 2 learning rate (all layers); should be 10-50x smaller than --lr")
     parser.add_argument("--weight_decay",  type=float, default=1e-4)
-    parser.add_argument("--freeze_epochs", type=int,   default=8,
+    parser.add_argument("--freeze_epochs", type=int,   default=12,
                         help="Number of Stage 1 epochs to train head only before unfreezing")
     parser.add_argument("--device",        type=str,   default="auto",
                         choices=["auto","cpu","cuda","mps"])
@@ -246,8 +314,8 @@ def main() -> None:
     parser.add_argument("--mixup_alpha",   type=float, default=0.3)
     parser.add_argument("--label_smooth",  type=float, default=0.1)
     parser.add_argument("--dropout",       type=float, default=0.4)
-    parser.add_argument("--backbone",      type=str,   default="efficientnet",
-                        choices=["efficientnet","resnet18"])
+    parser.add_argument("--backbone", type=str, default="efficientnet",
+                        choices=["efficientnet", "resnet18", "convnext"])
     parser.add_argument("--no_pretrained", action="store_true")
     parser.add_argument("--save_path",     type=str,   default="checkpoints/best.pt")
 
@@ -263,7 +331,7 @@ def main() -> None:
           f"Label Smooth: {args.label_smooth} | Dropout: {args.dropout}")
 
     # ---- Data ----
-    train_loader, val_loader, class_names, class_to_idx, n_train, n_val = make_loaders(
+    train_loader, val_loader, class_names, class_to_idx, n_train, n_val, train_tfm = make_loaders(
         data_dir=args.data_dir, train_subdir=args.train_subdir,
         batch_size=args.batch_size, img_size=args.img_size,
         val_ratio=args.val_ratio, num_workers=args.num_workers, seed=args.seed,
@@ -281,7 +349,7 @@ def main() -> None:
         model = build_model(num_classes, backbone="resnet18",
                             feature_extract=True, dropout=args.dropout).to(device)
 
-    criterion    = nn.CrossEntropyLoss(label_smoothing=args.label_smooth)
+    criterion = FocalLoss(gamma=2.0, label_smoothing=args.label_smooth)
     save_path    = Path(args.save_path)
     best_val_acc = -1.0
 
@@ -358,7 +426,6 @@ def main() -> None:
 
     print(f"\nDone. Best val accuracy: {best_val_acc:.4f}")
     print(f"Best checkpoint saved to: {save_path}")
-
 
 if __name__ == "__main__":
     main()
