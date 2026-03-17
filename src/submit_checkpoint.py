@@ -315,3 +315,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+#.\.venv\Scripts\python.exe src\train_resnet50_finetune.py --data_dir data --fine_tune --lr_scheduler --device cuda --num_workers 4 --lr 1e-3 --finetune_lr 2e-5 --dropout 0.2 --label_smooth 0.0 --amp --save_path checkpoints/best_resnet50.pt
+# command to run ^
