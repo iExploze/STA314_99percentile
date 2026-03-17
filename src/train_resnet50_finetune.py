@@ -35,12 +35,16 @@ except Exception:
     pass
 
 import argparse
+import logging
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Tuple, Dict
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
+from tqdm.auto import tqdm
 from torchvision import models, datasets, transforms
 from torchvision.models import ResNet50_Weights
 
@@ -200,6 +204,25 @@ def count_trainable(model: nn.Module) -> int:
 
 
 # -----------------------------
+# Logging
+# -----------------------------
+def setup_logger(log_path: Path) -> logging.Logger:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger("train_resnet50_finetune")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    )
+    logger.addHandler(file_handler)
+
+    return logger
+
+# -----------------------------
 # One epoch
 # -----------------------------
 def run_one_epoch(
@@ -210,6 +233,7 @@ def run_one_epoch(
     optimizer=None,
     use_mixup: bool = False,
     mixup_alpha: float = 0.3,
+    progress_label: str = "",
 ) -> Tuple[float, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -217,7 +241,14 @@ def run_one_epoch(
     total_loss, total_correct, total_seen = 0.0, 0, 0
 
     with torch.set_grad_enabled(is_train):
-        for x, y in loader:
+        progress_bar = tqdm(
+            loader,
+            desc=progress_label or ("train" if is_train else "val"),
+            dynamic_ncols=True,
+            leave=False,
+            unit="batch",
+        )
+        for x, y in progress_bar:
             x, y = x.to(device), y.to(device)
 
             if is_train:
@@ -244,6 +275,11 @@ def run_one_epoch(
             total_loss += loss.item() * y.size(0)
             total_correct += batch_correct
             total_seen += y.size(0)
+
+            progress_bar.set_postfix(
+                loss=f"{total_loss / max(total_seen, 1):.4f}",
+                acc=f"{total_correct / max(total_seen, 1):.4f}",
+            )
 
     return total_loss / max(total_seen, 1), total_correct / max(total_seen, 1)
 
@@ -345,8 +381,10 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--no_pretrained", action="store_true")
     parser.add_argument("--save_path", type=str, default="checkpoints/best_resnet50.pt")
+    parser.add_argument("--log_path", type=str, default="logs/train_resnet50_finetune.log")
 
     args = parser.parse_args()
+    logger = setup_logger(Path(args.log_path))
 
     if args.full_finetune and args.fine_tune:
         print("⚠️ Both --full_finetune and --fine_tune were set. Using --full_finetune mode.")
@@ -356,6 +394,13 @@ def main() -> None:
         torch.cuda.manual_seed_all(args.seed)
 
     device = get_device(args.device)
+    logger.info(f"Training started at {datetime.now().isoformat(timespec='seconds')}")
+    logger.info(f"Device: {device}")
+    logger.info(
+        f"Backbone: ResNet50 | Mixup: {args.mixup} | "
+        f"Label Smooth: {args.label_smooth} | Dropout: {args.dropout} | "
+        f"Full FT: {args.full_finetune}"
+    )
     print(f"Device: {device}")
     print(
         f"Backbone: ResNet50 | Mixup: {args.mixup} | "
@@ -375,6 +420,11 @@ def main() -> None:
     )
 
     num_classes = len(class_names)
+    logger.info(f"Classes ({num_classes}): {class_names}")
+    logger.info(
+        f"Train samples: {n_train} | Val samples: {n_val} | "
+        f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}"
+    )
     print(f"Classes ({num_classes}): {class_names}")
     print(f"Train: {n_train} | Val: {n_val}")
 
@@ -401,6 +451,12 @@ def main() -> None:
         print(f"Training for {total_epochs} epochs | lr={args.finetune_lr}")
         print(f"  Trainable params: {count_trainable(model):,}")
         print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Full Fine-tune Mode: all ResNet50 layers trainable from epoch 1")
+        logger.info(f"Training for {total_epochs} epochs | lr={args.finetune_lr}")
+        logger.info(f"Trainable params: {count_trainable(model):,}")
+        logger.info(f"Best checkpoint path: {save_path}")
+        logger.info(f"{'=' * 60}")
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -414,6 +470,7 @@ def main() -> None:
         )
 
         for ep in range(1, total_epochs + 1):
+            epoch_start = time.perf_counter()
             tr_loss, tr_acc = run_one_epoch(
                 model,
                 train_loader,
@@ -422,22 +479,41 @@ def main() -> None:
                 optimizer,
                 use_mixup=args.mixup,
                 mixup_alpha=args.mixup_alpha,
+                progress_label=f"FULL train {ep}/{total_epochs}",
             )
-            vl_loss, vl_acc = run_one_epoch(model, val_loader, criterion, device)
+            vl_loss, vl_acc = run_one_epoch(
+                model,
+                val_loader,
+                criterion,
+                device,
+                progress_label=f"FULL val {ep}/{total_epochs}",
+            )
 
             if scheduler:
                 scheduler.step()
 
+            epoch_time = time.perf_counter() - epoch_start
             print(
                 f"[FULL] Ep {ep:02d}/{total_epochs} | "
                 f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
                 f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | "
-                f"lr={optimizer.param_groups[0]['lr']:.2e}"
+                f"lr={optimizer.param_groups[0]['lr']:.2e} | "
+                f"time={epoch_time:.1f}s"
+            )
+            logger.info(
+                f"[FULL] Ep {ep:02d}/{total_epochs} | "
+                f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
+                f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | "
+                f"lr={optimizer.param_groups[0]['lr']:.2e} | "
+                f"time={epoch_time:.1f}s"
             )
 
             if vl_acc > best_val_acc:
                 best_val_acc = vl_acc
                 save_checkpoint(save_path, model, class_to_idx, ep, best_val_acc, args)
+                logger.info(
+                    f"Best val acc improved to {best_val_acc:.4f}; checkpoint saved to {save_path}"
+                )
                 print(f"  ✅ Best val acc {best_val_acc:.4f} → {save_path}")
 
     else:
@@ -450,6 +526,11 @@ def main() -> None:
         print(f"Stage 1: Head-only ({stage1_epochs} epochs | lr={args.lr})")
         print(f"  Trainable params: {count_trainable(model):,}")
         print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Stage 1: Head-only ({stage1_epochs} epochs | lr={args.lr})")
+        logger.info(f"Trainable params: {count_trainable(model):,}")
+        logger.info(f"Best checkpoint path: {save_path}")
+        logger.info(f"{'=' * 60}")
 
         opt1 = torch.optim.AdamW(
             [p for p in model.parameters() if p.requires_grad],
@@ -463,6 +544,7 @@ def main() -> None:
         )
 
         for ep in range(1, stage1_epochs + 1):
+            epoch_start = time.perf_counter()
             tr_loss, tr_acc = run_one_epoch(
                 model,
                 train_loader,
@@ -470,17 +552,33 @@ def main() -> None:
                 device,
                 opt1,
                 use_mixup=False,
+                progress_label=f"S1 train {ep}/{stage1_epochs}",
             )
-            vl_loss, vl_acc = run_one_epoch(model, val_loader, criterion, device)
+            vl_loss, vl_acc = run_one_epoch(
+                model,
+                val_loader,
+                criterion,
+                device,
+                progress_label=f"S1 val {ep}/{stage1_epochs}",
+            )
 
             if sch1:
                 sch1.step()
 
+            epoch_time = time.perf_counter() - epoch_start
             print(
                 f"[S1] Ep {ep:02d}/{stage1_epochs} | "
                 f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
                 f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | "
-                f"lr={opt1.param_groups[0]['lr']:.2e}"
+                f"lr={opt1.param_groups[0]['lr']:.2e} | "
+                f"time={epoch_time:.1f}s"
+            )
+            logger.info(
+                f"[S1] Ep {ep:02d}/{stage1_epochs} | "
+                f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
+                f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | "
+                f"lr={opt1.param_groups[0]['lr']:.2e} | "
+                f"time={epoch_time:.1f}s"
             )
 
             if vl_acc > best_val_acc:
@@ -501,6 +599,11 @@ def main() -> None:
                 unfreeze_model(model)
                 print(f"  Trainable params: {count_trainable(model):,}")
                 print(f"{'=' * 60}")
+                logger.info(f"\n{'=' * 60}")
+                logger.info(f"Stage 2: Full fine-tune ({stage2_epochs} epochs | lr={args.finetune_lr})")
+                logger.info("All layers unfrozen for fine-tuning.")
+                logger.info(f"Trainable params: {count_trainable(model):,}")
+                logger.info(f"{'=' * 60}")
 
                 opt2 = torch.optim.AdamW(
                     model.parameters(),
@@ -514,6 +617,7 @@ def main() -> None:
                 )
 
                 for ep in range(1, stage2_epochs + 1):
+                    epoch_start = time.perf_counter()
                     tr_loss, tr_acc = run_one_epoch(
                         model,
                         train_loader,
@@ -522,27 +626,49 @@ def main() -> None:
                         opt2,
                         use_mixup=args.mixup,
                         mixup_alpha=args.mixup_alpha,
+                        progress_label=f"S2 train {ep}/{stage2_epochs}",
                     )
-                    vl_loss, vl_acc = run_one_epoch(model, val_loader, criterion, device)
+                    vl_loss, vl_acc = run_one_epoch(
+                        model,
+                        val_loader,
+                        criterion,
+                        device,
+                        progress_label=f"S2 val {ep}/{stage2_epochs}",
+                    )
 
                     if sch2:
                         sch2.step()
 
                     global_ep = stage1_epochs + ep
+                    epoch_time = time.perf_counter() - epoch_start
                     print(
                         f"[S2] Ep {global_ep:02d}/{args.epochs} | "
                         f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
                         f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | "
-                        f"lr={opt2.param_groups[0]['lr']:.2e}"
+                        f"lr={opt2.param_groups[0]['lr']:.2e} | "
+                        f"time={epoch_time:.1f}s"
+                    )
+                    logger.info(
+                        f"[S2] Ep {global_ep:02d}/{args.epochs} | "
+                        f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
+                        f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | "
+                        f"lr={opt2.param_groups[0]['lr']:.2e} | "
+                        f"time={epoch_time:.1f}s"
                     )
 
                     if vl_acc > best_val_acc:
                         best_val_acc = vl_acc
                         save_checkpoint(save_path, model, class_to_idx, global_ep, best_val_acc, args)
+                        logger.info(
+                            f"Best val acc improved to {best_val_acc:.4f}; checkpoint saved to {save_path}"
+                        )
                         print(f"  ✅ Best val acc {best_val_acc:.4f} → {save_path}")
 
     print(f"\nDone. Best val accuracy: {best_val_acc:.4f}")
     print(f"Best checkpoint saved to: {save_path}")
+    logger.info(f"Done. Best val accuracy: {best_val_acc:.4f}")
+    logger.info(f"Best checkpoint saved to: {save_path}")
+    logger.info(f"Training log saved to: {args.log_path}")
 
 
 if __name__ == "__main__":
