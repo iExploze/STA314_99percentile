@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Any, List
 
 import pandas as pd
 import torch
@@ -13,6 +13,7 @@ from torchvision.models import (
     ResNet18_Weights,
     ResNet50_Weights,
     EfficientNet_B2_Weights,
+    ConvNeXt_Tiny_Weights,
 )
 
 
@@ -34,7 +35,7 @@ def get_device(device_arg: str = "auto") -> torch.device:
 
 
 # -----------------------------
-# Transforms
+# Eval transforms
 # -----------------------------
 def build_eval_transform(img_size: int = 224):
     mean = [0.485, 0.456, 0.406]
@@ -50,7 +51,7 @@ def build_eval_transform(img_size: int = 224):
 # -----------------------------
 # Model builders
 # -----------------------------
-def build_resnet18(num_classes: int, dropout: float = 0.0) -> nn.Module:
+def build_resnet18_simple(num_classes: int, dropout: float = 0.0) -> nn.Module:
     model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
     if dropout > 0:
         model.fc = nn.Sequential(
@@ -62,7 +63,24 @@ def build_resnet18(num_classes: int, dropout: float = 0.0) -> nn.Module:
     return model
 
 
-def build_resnet50(num_classes: int, dropout: float = 0.0) -> nn.Module:
+def build_resnet18_deep(num_classes: int, dropout: float = 0.2) -> nn.Module:
+    model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+    in_features = model.fc.in_features
+    model.fc = nn.Sequential(
+        nn.Linear(in_features, 512),
+        nn.BatchNorm1d(512),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=dropout),
+        nn.Linear(512, 128),
+        nn.BatchNorm1d(128),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=max(0.05, dropout * 0.5)),
+        nn.Linear(128, num_classes),
+    )
+    return model
+
+
+def build_resnet50_simple(num_classes: int, dropout: float = 0.0) -> nn.Module:
     model = models.resnet50(weights=ResNet50_Weights.DEFAULT)
     if dropout > 0:
         model.fc = nn.Sequential(
@@ -74,7 +92,24 @@ def build_resnet50(num_classes: int, dropout: float = 0.0) -> nn.Module:
     return model
 
 
-def build_efficientnet_b2(num_classes: int, dropout: float = 0.0) -> nn.Module:
+def build_resnet50_deep(num_classes: int, dropout: float = 0.2) -> nn.Module:
+    model = models.resnet50(weights=ResNet50_Weights.DEFAULT)
+    in_features = model.fc.in_features
+    model.fc = nn.Sequential(
+        nn.Linear(in_features, 512),
+        nn.BatchNorm1d(512),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=dropout),
+        nn.Linear(512, 128),
+        nn.BatchNorm1d(128),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=max(0.05, dropout * 0.5)),
+        nn.Linear(128, num_classes),
+    )
+    return model
+
+
+def build_efficientnet_b2_simple(num_classes: int, dropout: float = 0.0) -> nn.Module:
     model = models.efficientnet_b2(weights=EfficientNet_B2_Weights.DEFAULT)
     in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
@@ -84,24 +119,126 @@ def build_efficientnet_b2(num_classes: int, dropout: float = 0.0) -> nn.Module:
     return model
 
 
-def build_model_from_checkpoint_args(
-    checkpoint_args: Dict,
+def build_efficientnet_b2_deep(num_classes: int, dropout: float = 0.2) -> nn.Module:
+    model = models.efficientnet_b2(weights=EfficientNet_B2_Weights.DEFAULT)
+    in_features = model.classifier[1].in_features
+    model.classifier = nn.Sequential(
+        nn.Linear(in_features, 512),
+        nn.BatchNorm1d(512),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=dropout),
+        nn.Linear(512, 128),
+        nn.BatchNorm1d(128),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=max(0.05, dropout * 0.5)),
+        nn.Linear(128, num_classes),
+    )
+    return model
+
+
+def build_convnext_tiny_deep(num_classes: int, dropout: float = 0.2) -> nn.Module:
+    model = models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+    in_features = model.classifier[2].in_features
+    model.classifier[2] = nn.Sequential(
+        nn.Linear(in_features, 512),
+        nn.BatchNorm1d(512),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=dropout),
+        nn.Linear(512, 128),
+        nn.BatchNorm1d(128),
+        nn.ReLU(inplace=True),
+        nn.Dropout(p=max(0.05, dropout * 0.5)),
+        nn.Linear(128, num_classes),
+    )
+    return model
+
+
+# -----------------------------
+# Robust checkpoint loader
+# -----------------------------
+def load_model_from_checkpoint(
+    ckpt: Dict[str, Any],
     num_classes: int,
-) -> nn.Module:
+) -> tuple[nn.Module, str]:
+    checkpoint_args = ckpt.get("args", {})
+    state_dict = ckpt["model_state_dict"]
     dropout = float(checkpoint_args.get("dropout", 0.0))
+    backbone = checkpoint_args.get("backbone", None)
 
-    # train_resnet50_finetune.py usually has no backbone arg
-    if "backbone" not in checkpoint_args:
-        return build_resnet50(num_classes=num_classes, dropout=dropout)
+    candidates: List[tuple[str, nn.Module]] = []
 
-    backbone = checkpoint_args.get("backbone", "resnet18")
+    # Newer ResNet50 training script had no backbone arg
+    if backbone is None:
+        candidates.extend([
+            ("resnet50_deep", build_resnet50_deep(num_classes, dropout=max(dropout, 0.2))),
+            ("resnet50_simple", build_resnet50_simple(num_classes, dropout=dropout)),
+        ])
+    elif backbone == "resnet18":
+        candidates.extend([
+            ("resnet18_deep", build_resnet18_deep(num_classes, dropout=max(dropout, 0.2))),
+            ("resnet18_simple", build_resnet18_simple(num_classes, dropout=dropout)),
+        ])
+    elif backbone == "efficientnet":
+        candidates.extend([
+            ("efficientnet_b2_deep", build_efficientnet_b2_deep(num_classes, dropout=max(dropout, 0.2))),
+            ("efficientnet_b2_simple", build_efficientnet_b2_simple(num_classes, dropout=dropout)),
+        ])
+    elif backbone == "convnext":
+        candidates.extend([
+            ("convnext_tiny_deep", build_convnext_tiny_deep(num_classes, dropout=max(dropout, 0.2))),
+        ])
+    else:
+        raise ValueError(f"Unsupported backbone in checkpoint args: {backbone}")
 
-    if backbone == "resnet18":
-        return build_resnet18(num_classes=num_classes, dropout=dropout)
-    if backbone == "efficientnet":
-        return build_efficientnet_b2(num_classes=num_classes, dropout=dropout)
+    last_error = None
+    for name, model in candidates:
+        try:
+            model.load_state_dict(state_dict)
+            return model, name
+        except RuntimeError as e:
+            last_error = e
 
-    raise ValueError(f"Unsupported backbone in checkpoint args: {backbone}")
+    raise RuntimeError(
+        f"Could not load checkpoint into any supported architecture. Last error:\n{last_error}"
+    )
+
+
+# -----------------------------
+# Test file resolver
+# -----------------------------
+def build_test_lookup(test_dir: Path) -> Dict[str, Path]:
+    valid_exts = {".jpg", ".jpeg", ".png"}
+    files = [p for p in test_dir.iterdir() if p.is_file() and p.suffix.lower() in valid_exts]
+
+    lookup: Dict[str, Path] = {}
+    for p in files:
+        lookup[p.name.lower()] = p
+        lookup[p.stem.lower()] = p
+    return lookup
+
+
+def resolve_test_path(raw_id: str, lookup: Dict[str, Path]) -> Path:
+    raw = str(raw_id).strip()
+    raw_lower = raw.lower()
+
+    candidates = [
+        raw_lower,
+        Path(raw_lower).name,
+        Path(raw_lower).stem,
+    ]
+
+    if "." not in Path(raw).name:
+        candidates.extend([
+            f"{raw_lower}.jpg",
+            f"{raw_lower}.jpeg",
+            f"{raw_lower}.png",
+        ])
+
+    for key in candidates:
+        if key in lookup:
+            return lookup[key]
+
+    raise FileNotFoundError(f"Could not resolve test file for sample_submission id: {raw_id}")
 
 
 # -----------------------------
@@ -140,14 +277,13 @@ def main() -> None:
     class_to_idx = ckpt["class_to_idx"]
     idx_to_class = {v: k for k, v in class_to_idx.items()}
     num_classes = len(class_to_idx)
-    checkpoint_args = ckpt.get("args", {})
 
-    print(f"Classes: {idx_to_class}")
-
-    model = build_model_from_checkpoint_args(checkpoint_args, num_classes=num_classes)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model, architecture_name = load_model_from_checkpoint(ckpt, num_classes=num_classes)
     model.to(device)
     model.eval()
+
+    print(f"Loaded model as: {architecture_name}")
+    print(f"Classes: {idx_to_class}")
 
     tfm = build_eval_transform(args.img_size)
 
@@ -158,25 +294,20 @@ def main() -> None:
     id_col = sample.columns[0]
     pred_col = sample.columns[1]
 
-    test_files = sorted([
-        p for p in test_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
-    ])
+    lookup = build_test_lookup(test_dir)
 
-    ids = [p.name for p in test_files]
-    pred_labels = []
-
+    predictions = []
     with torch.no_grad():
-        for p in test_files:
-            img = Image.open(p).convert("RGB")
+        for raw_id in sample[id_col].tolist():
+            img_path = resolve_test_path(raw_id, lookup)
+            img = Image.open(img_path).convert("RGB")
             x = tfm(img).unsqueeze(0).to(device)
-            pred_idx = int(model(x).argmax(dim=1).item())
-            pred_labels.append(idx_to_class[pred_idx])
+            logits = model(x)
+            pred_idx = int(logits.argmax(dim=1).item())
+            predictions.append(idx_to_class[pred_idx])
 
-    submission = pd.DataFrame({
-        id_col: ids,
-        pred_col: pred_labels,
-    })
+    submission = sample.copy()
+    submission[pred_col] = predictions
     submission.to_csv(output_csv, index=False)
 
     print(f"Saved submission to: {output_csv}")
