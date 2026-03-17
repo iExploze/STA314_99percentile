@@ -421,7 +421,7 @@ def main() -> None:
     parser.add_argument("--img_size", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=314)
+    parser.add_argument("--seed", type=int, default=1)
 
     # Training
     parser.add_argument("--epochs", type=int, default=30)
