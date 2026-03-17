@@ -74,21 +74,13 @@ def build_transforms(img_size: int = 224):
     std = [0.229, 0.224, 0.225]
 
     train_tfm = transforms.Compose([
-        transforms.Resize((img_size + 32, img_size + 32)),
+        transforms.Resize((img_size + 16, img_size + 16)),
         transforms.RandomCrop(img_size),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(20),
-        transforms.ColorJitter(
-            brightness=0.4,
-            contrast=0.4,
-            saturation=0.3,
-            hue=0.1,
-        ),
-        transforms.RandomGrayscale(p=0.05),
-        transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
+        transforms.RandomRotation(8),
+        transforms.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.08, hue=0.02),
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
-        transforms.RandomErasing(p=0.2, scale=(0.02, 0.15)),
     ])
 
     val_tfm = transforms.Compose([
@@ -174,7 +166,7 @@ def mixup_criterion(criterion, logits, y_a, y_b, lam):
 def build_model(
     num_classes: int,
     feature_extract: bool = True,
-    dropout: float = 0.4,
+    dropout: float = 0.2,
     pretrained: bool = True,
 ) -> nn.Module:
     weights = ResNet50_Weights.DEFAULT if pretrained else None
@@ -377,7 +369,7 @@ def main() -> None:
         help="Enable Mixup augmentation during fine-tuning",
     )
     parser.add_argument("--mixup_alpha", type=float, default=0.3)
-    parser.add_argument("--label_smooth", type=float, default=0.1)
+    parser.add_argument("--label_smooth", type=float, default=0.01)
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--no_pretrained", action="store_true")
     parser.add_argument("--save_path", type=str, default="checkpoints/best_resnet50.pt")
